@@ -10,10 +10,10 @@ enum TaskToRun<Task> {
   Todo(Task),
 }
 impl<Task> TaskToRun<Task> {
-  fn take(&mut self) -> Task {
+  fn take(&mut self) -> Option<Task> {
     match std::mem::replace(self, TaskToRun::Running) {
-      TaskToRun::Running => panic!("take task already running"),
-      TaskToRun::Todo(t) => t,
+      TaskToRun::Running => None,
+      TaskToRun::Todo(t) => Some(t),
     }
   }
   fn restore(&mut self, t: Task) {
@@ -37,16 +37,18 @@ struct TaskInfo<O, Controller> {
   pub controller: Controller,
 }
 
+#[derive(Debug)]
 struct Current<K> {
   pub current: Vec<K>,
   pub todo: VecDeque<K>, // Paused
   pub tocancel: BTreeSet<K>, // Waiting
 }
-impl<K: Ord + Copy> Current<K> {
+impl<K: Ord + Copy + std::fmt::Debug> Current<K> {
   fn new() -> Self {
     Self { current: Vec::new(), todo: VecDeque::new(), tocancel: BTreeSet::new(), }
   }
   fn renew(&mut self, target: &[K]) {
+    debug!("renew {:?}", self);
     self.todo.clear();
     self.tocancel.extend(std::mem::replace(&mut self.current, Vec::with_capacity(target.len())));
     for &k in target {
@@ -56,17 +58,24 @@ impl<K: Ord + Copy> Current<K> {
         self.todo.push_back(k);
       }
     }
+    debug!("renew2 {:?}", self);
   }
   fn take_cancel(&mut self) -> Vec<K> {
+    debug!("take_cancel {:?}", self);
     std::mem::replace(&mut self.tocancel, BTreeSet::new()).into_iter().collect()
   }
   fn pop_todo(&mut self) -> Option<K> {
+    debug!("pop_todo {:?}", self);
     self.todo.pop_front()
+  }
+  fn push_current(&mut self, k: K) {
+    self.current.push(k);
   }
 }
 
 pub struct State;
 
+// TODO: ICE https://github.com/rust-lang/rust/issues/70746
 pub trait Callback<T: Task>: FnMut(<<T as Task>::Controller as AsProgress>::Progress) {}
 impl<T: Task, F: FnMut(<<T as Task>::Controller as AsProgress>::Progress)> Callback<T> for F { }
 
@@ -81,12 +90,11 @@ pub struct PriorityTasksState<O, T: Task> {
   finished: VecDeque<(Entry, T)>,
   capacity: usize,
   finished_capacity: Option<usize>,
-  callback: Option<Box<dyn Callback<T> + Send>>,
+  callback: Option<Box<dyn FnMut(<<T as Task>::Controller as AsProgress>::Progress) + Send>>,
 }
 
 impl<O: Ord + Copy, T: Task> PriorityTasksState<O, T> {
-  fn new(capacity: usize, finished_capacity: Option<usize>, callback: Option<impl Callback<T> + Send + 'static>) -> Self {
-    let callback = callback.map(|f| -> Box<dyn Callback<T> + Send> { Box::new(f) });
+  fn new(capacity: usize, finished_capacity: Option<usize>) -> Self {
     Self {
       idx: Default::default(),
       key_map: Default::default(),
@@ -97,7 +105,14 @@ impl<O: Ord + Copy, T: Task> PriorityTasksState<O, T> {
       current: Current::new(),
       finished: VecDeque::new(),
       capacity, finished_capacity,
-      callback,
+      callback: None,
+    }
+  }
+  fn new_with_callback(capacity: usize, finished_capacity: Option<usize>, callback: impl Callback<T> + Send + 'static) -> Self {
+    let callback: Box<dyn FnMut(<<T as Task>::Controller as AsProgress>::Progress) + Send> = Box::new(callback);
+    Self {
+      callback: Some(callback),
+      ..Self::new(capacity, finished_capacity)
     }
   }
 
@@ -121,7 +136,7 @@ impl<O: Ord + Copy, T: Task> PriorityTasksState<O, T> {
     let key = self.key_map.remove(&entry)?;
     let mut info = self.info.remove(&key).expect("info");
     let status = self.status.remove(&info.priority).expect("status");
-    info.controller.shutdown();
+    if !info.controller.is_finished() { info.controller.shutdown(); }
     self.queue.remove(&info.priority);
     self.tasks.remove(key);
     Some(status)
@@ -154,9 +169,13 @@ impl<O: Ord + Copy, T: Task> PriorityTasksState<O, T> {
     info.priority = priority;
     Some(old_priority)
   }
+
+  fn take_finished(&mut self) -> VecDeque<(Entry, T)> {
+    std::mem::replace(&mut self.finished, VecDeque::new())
+  }
 }
 
-impl<O, T: Task> Schedulable<Entry, T> for PriorityTasksState<O, T> {
+impl<O: Ord + Copy, T: Task> Schedulable<Entry, T> for PriorityTasksState<O, T> {
   type Message = <T::Controller as AsProgress>::Progress;
   fn flush(&mut self) {
     while self.finished_capacity.map(|cap| self.finished.len() > cap) == Some(true) {
@@ -176,9 +195,11 @@ impl<O, T: Task> Schedulable<Entry, T> for PriorityTasksState<O, T> {
   fn restore(&mut self, entry: Entry, task: T) {
     let key = self.key_map[&entry];
     let info = self.info.get(&key).expect("info");
+    info!("restore: {:?} {}", entry, info.controller.is_finished());
     if !info.controller.is_finished() {
       self.tasks.get_mut(key).expect("tasks").restore(task);
     } else {
+      self.remove_task(entry);
       self.finished.push_back((entry, task));
     }
     // TODO check complete here?
@@ -187,7 +208,11 @@ impl<O, T: Task> Schedulable<Entry, T> for PriorityTasksState<O, T> {
   fn fetch(&mut self) -> Option<(Entry, T)> {
     while let Some(entry) = self.current.pop_todo() {
       if let Some(&key) = self.key_map.get(&entry) {
-        return Some((entry, self.tasks.get_mut(key).expect("tasks").take()))
+        if let Some(t) = self.tasks.get_mut(key).expect("tasks").take() {
+          info!("fetch {:?}", entry);
+          self.current.push_current(entry);
+          return Some((entry, t))
+        } // do not push_back, if haven't restored, it would finish sooner or later
       }
     }
     None
@@ -205,25 +230,41 @@ pub struct PriorityTasks<Priority: Ord + Copy, Task: crate::core::Task> {
   scheduler: Scheduler<Entry, Task, PriorityTasksState<Priority, Task>>,
 }
 impl<O: Ord + Copy, T: Task> PriorityTasks<O, T> {
-  pub fn new(capacity: usize, finished_capacity: Option<usize>, callback: Option<impl Callback<T> + Send + 'static>) -> Self {
-    let state = Arc::new(Mutex::new(PriorityTasksState::new(capacity, finished_capacity, callback)));
+  pub fn new(capacity: usize, finished_capacity: Option<usize>) -> Self {
+    let state = Arc::new(Mutex::new(PriorityTasksState::new(capacity, finished_capacity)));
+    Self {
+      state: state.clone(),
+      scheduler: Scheduler::new(capacity, state),
+    }
+  }
+  pub fn new_with_callback(capacity: usize, finished_capacity: Option<usize>, callback: impl Callback<T> + Send + 'static) -> Self {
+    let state = Arc::new(Mutex::new(PriorityTasksState::new_with_callback(capacity, finished_capacity, callback)));
     Self {
       state: state.clone(),
       scheduler: Scheduler::new(capacity, state),
     }
   }
 
-  pub fn update<F: FnOnce(&mut PriorityTasksState<O, T>)>(&self, f: F) {
-    f(&mut self.state.lock().unwrap());
+  pub fn update<R, F: FnOnce(&mut PriorityTasksState<O, T>) -> R>(&self, f: F) -> R {
+    let r = f(&mut self.state.lock().unwrap());
     self.scheduler.flush();
+    r
+  }
+
+  pub fn finished(&self) -> Vec<(Entry, T)> {
+    self.state.lock().unwrap().take_finished().into_iter().collect()
   }
 }
 
 impl<O: Ord + Copy, I, T: Task<Item=(usize, I)> + Unpin + Send + 'static> PriorityTasks<O, T>
   where <T::Controller as AsProgress>::Progress: Send + 'static, PriorityTasksState<O, T>: Send + 'static {
-  pub fn scheduler(&mut self) {
+  pub fn schedule(&mut self) {
     self.scheduler.new_workers();
     self.scheduler.spawn();
+  }
+
+  pub fn wait(&mut self) {
+    self.scheduler.wait();
   }
 
   pub fn finalize(&mut self) {

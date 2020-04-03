@@ -7,6 +7,7 @@ edition = "2018"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+log = "*"
 ambassador = "*"
 slab = "*"
 parking_lot = "*"
@@ -14,5 +15,7 @@ crossbeam-channel = "*"
 futures = "0.3"
 
 [dev-dependencies]
+dotenv = "*"
+env_logger = "*"
 async-std = "*"
 rand = "*"

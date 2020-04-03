@@ -1,3 +1,4 @@
+#[macro_use] extern crate log;
 #[macro_use] extern crate ambassador;
 
 #[macro_use] pub mod core;

@@ -1,13 +1,13 @@
 extern crate atasks;
 
 use atasks::queue::{TaskQueue, TaskQueueData};
+use atasks::tasks::PriorityTasks;
 use atasks::core::*;
 
 use std::collections::HashSet;
 use std::future::Future;
 use std::pin::Pin;
 use std::task::{Poll, Context};
-use futures::StreamExt;
 
 struct Calc {
   data: f64,
@@ -22,7 +22,7 @@ impl Calc {
     let t = (i * 20.0 % 1000.0) as u64;
     async_std::task::sleep(std::time::Duration::from_millis(t)).await;
     let p: u32 = rand::thread_rng().gen_range(0, 100);
-    if p < 80 {
+    if p < 20 {
       return Err(())
     }
     Ok(i * i)
@@ -103,10 +103,15 @@ impl CalcQueueData {
 }
 
 fn main() {
-  let mut s = CalcQueueData::gen_queue(100, 5);
-  let s_ref = &mut s;
-  futures::executor::block_on(async move {
-    while let Some(_) = s_ref.next().await { }
+  dotenv::dotenv().ok();
+  env_logger::init();
+  let mut tasks = PriorityTasks::<i32, TaskQueue<CalcQueueData>>::new(3, None);
+  tasks.schedule();
+  tasks.update(|t| {
+    (0..30).map(|_| t.add_task_resume(0, CalcQueueData::gen_queue(100, 5))).collect::<Vec<_>>()
   });
-  s.data().check(s.controller().progress());
+  tasks.wait();
+  let finished = tasks.finished();
+  assert_eq!(finished.len(), 30);
+  finished.iter().for_each(|(_, s)| s.data().check(s.controller().progress()));
 }

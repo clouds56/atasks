@@ -1,3 +1,4 @@
+use std::fmt::Debug;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -19,6 +20,7 @@ pub enum Message<E, P, T> {
   Finish(usize, E, T),
   NewWorker(usize),
   Flush,
+  Wait,
   Close,
 }
 
@@ -58,7 +60,7 @@ impl<E, P, T> Worker<E, P, T> {
   }
 }
 
-impl<E: Copy, I, P, T: Task<Item=(usize, I)> + Unpin> Worker<E, P, T>
+impl<E: Copy + Debug, I, P, T: Task<Item=(usize, I)> + Unpin> Worker<E, P, T>
   where P: From<<T::Controller as AsProgress>::Progress> {
   pub fn event_loop(idx: usize, rx: Receiver<Option<(E, T)>>, tx: Sender<Message<E, P, T>>) -> Receiver<Option<(E, T)>> {
     use futures::StreamExt;
@@ -66,8 +68,10 @@ impl<E: Copy, I, P, T: Task<Item=(usize, I)> + Unpin> Worker<E, P, T>
       while let Ok(Some((entry, mut t))) = rx.recv() {
         let controller = t.controller();
         while let Some((i, _)) = t.next().await {
+          trace!("worker {} progress {:?} {}", idx, entry, i);
           let _ = tx.send(Message::Progress(idx, entry, i, controller.progress().into()));
         }
+        info!("worker {} finished {:?}", idx, entry);
         let _ = tx.send(Message::Finish(idx, entry, t));
       }
     });
@@ -75,7 +79,7 @@ impl<E: Copy, I, P, T: Task<Item=(usize, I)> + Unpin> Worker<E, P, T>
   }
 }
 
-impl<E: Copy + Send + 'static, I, P, T: Task<Item=(usize, I)> + Unpin + Send + 'static> Worker<E, P, T>
+impl<E: Copy + Debug + Send + 'static, I, P, T: Task<Item=(usize, I)> + Unpin + Send + 'static> Worker<E, P, T>
   where P: From<<T::Controller as AsProgress>::Progress> + Send + 'static {
   fn spawn(&mut self) {
     let tx = self.tx.clone();
@@ -116,7 +120,7 @@ impl<E, T, S: Schedulable<E, T>> Scheduler<E, T, S> {
   }
 }
 
-impl<E: Copy + Send + 'static, I, T: Task<Item=(usize, I)> + Unpin + Send + 'static, S: Schedulable<E, T>> Scheduler<E, T, S>
+impl<E: Copy + Debug + Send + 'static, I, T: Task<Item=(usize, I)> + Unpin + Send + 'static, S: Schedulable<E, T>> Scheduler<E, T, S>
   where S::Message: From<<T::Controller as AsProgress>::Progress> + Send + 'static {
   pub fn new_worker(&mut self) {
     if self.workers.len() >= self.capacity { return }
@@ -140,6 +144,7 @@ impl<E: Copy + Send + 'static, I, T: Task<Item=(usize, I)> + Unpin + Send + 'sta
 impl<E: Copy, I, T: Task<Item=(usize, I)> + Unpin, S: Schedulable<E, T>> Scheduler<E, T, S> {
   fn event_loop(rx: Receiver<Message<E, S::Message, T>>, dispatcher: Arc<Mutex<Dispatcher<E, T>>>, state: Arc<Mutex<S>>) -> Receiver<Message<E, S::Message, T>> {
     let mut retry = None;
+    let mut wait = false;
     while let Ok(m) = rx.recv() {
       match m {
         Message::Finish(i, entry, task) => {
@@ -159,6 +164,7 @@ impl<E: Copy, I, T: Task<Item=(usize, I)> + Unpin, S: Schedulable<E, T>> Schedul
           continue;
         },
         Message::NewWorker(_) => continue,
+        Message::Wait => { wait = true },
         Message::Close => {
           dispatcher.lock().unwrap().values().for_each(|(v, _)| {
             let _ = v.send(None);
@@ -166,10 +172,12 @@ impl<E: Copy, I, T: Task<Item=(usize, I)> + Unpin, S: Schedulable<E, T>> Schedul
           break
         },
         Message::Flush => {
+          debug!("flush");
           let mut state = state.lock().unwrap();
           state.flush();
         }
       }
+      let mut busy = 0;
       for (_, v) in dispatcher.lock().unwrap().iter_mut() {
         if v.1 {
           let mut state = state.lock().unwrap();
@@ -179,7 +187,13 @@ impl<E: Copy, I, T: Task<Item=(usize, I)> + Unpin, S: Schedulable<E, T>> Schedul
           } else {
             retry = None;
           }
+        } else {
+          busy += 1;
         }
+      }
+      debug!("{} workers busy", busy);
+      if wait && busy == 0 {
+        break;
       }
     }
     rx
@@ -202,6 +216,12 @@ impl<E: Copy + Send + 'static, I, T: Task<Item=(usize, I)> + Unpin + Send + 'sta
     self.handler.update(|rx| {
       MaybeJoin::Join(std::thread::spawn(|| { Self::event_loop(rx, dispatcher, state) }))
     });
+  }
+
+  pub fn wait(&mut self) {
+    if !self.handler.is_join() { return }
+    let _ = self.tx.send(Message::Wait);
+    self.handler.join()
   }
 
   pub fn join(&mut self) {
