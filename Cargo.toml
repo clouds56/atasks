@@ -12,3 +12,7 @@ slab = "*"
 parking_lot = "*"
 crossbeam-channel = "*"
 futures = "0.3"
+
+[dev-dependencies]
+async-std = "*"
+rand = "*"

@@ -36,6 +36,7 @@ impl<T: TaskQueueData> TaskQueue<T> {
       let (idx, item) = self.data.next(state.idx);
       if let Some(item) = item {
         state.items += 1;
+        state.idx = idx + 1;
         return Some((idx, item))
       } else {
         state.total = Some(idx)
@@ -56,6 +57,7 @@ impl<T: TaskQueueData> TaskQueue<T> {
       capacity,
     }
   }
+  pub fn data(&self) -> &T { &self.data }
   fn update_waker(&self, new_waker: &Waker) {
     if let Some(waker) = self.waker.take() {
       if waker.will_wake(new_waker) {
@@ -69,7 +71,6 @@ impl<T: TaskQueueData> TaskQueue<T> {
     let mut state = self.state.lock().unwrap();
     self.current.push((idx, item, fut));
     state.current += 1;
-    state.idx = idx + 1;
     state.processed += 1;
   }
   fn current_pop(&mut self, k: usize, check: bool) {

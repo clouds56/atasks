@@ -26,6 +26,7 @@ pub trait Task: Stream {
   fn controller(&self) -> Self::Controller;
 }
 
+#[derive(Debug, Clone)]
 pub struct Progress {
   pub current: usize,
   pub completed: usize,
