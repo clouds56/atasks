@@ -1,4 +1,5 @@
 use crate::core::*;
+use crate::scheduler::*;
 
 use std::sync::{Arc, Mutex};
 use std::collections::{VecDeque, HashMap, BTreeSet, BTreeMap};
@@ -46,6 +47,7 @@ impl<K: Ord + Copy> Current<K> {
     Self { current: Vec::new(), todo: VecDeque::new(), tocancel: BTreeSet::new(), }
   }
   fn renew(&mut self, target: &[K]) {
+    self.todo.clear();
     self.tocancel.extend(std::mem::replace(&mut self.current, Vec::with_capacity(target.len())));
     for &k in target {
       if self.tocancel.remove(&k) {
@@ -68,7 +70,7 @@ pub struct State;
 pub trait Callback<T: Task>: FnMut(<<T as Task>::Controller as AsProgress>::Progress) {}
 impl<T: Task, F: FnMut(<<T as Task>::Controller as AsProgress>::Progress)> Callback<T> for F { }
 
-pub struct PriorityTasksState<O: Ord + Copy, T: Task> {
+pub struct PriorityTasksState<O, T: Task> {
   idx: Entry,
   key_map: HashMap<Entry, Key>,
   tasks: Slab<TaskToRun<T>>,
@@ -152,7 +154,10 @@ impl<O: Ord + Copy, T: Task> PriorityTasksState<O, T> {
     info.priority = priority;
     Some(old_priority)
   }
+}
 
+impl<O, T: Task> Schedulable<Entry, T> for PriorityTasksState<O, T> {
+  type Message = <T::Controller as AsProgress>::Progress;
   fn flush(&mut self) {
     while self.finished_capacity.map(|cap| self.finished.len() > cap) == Some(true) {
       self.finished.pop_front();
@@ -167,27 +172,55 @@ impl<O: Ord + Copy, T: Task> PriorityTasksState<O, T> {
       }
     }
   }
+
+  fn restore(&mut self, entry: Entry, task: T) {
+    let key = self.key_map[&entry];
+    let info = self.info.get(&key).expect("info");
+    if !info.controller.is_finished() {
+      self.tasks.get_mut(key).expect("tasks").restore(task);
+    } else {
+      self.finished.push_back((entry, task));
+    }
+    // TODO check complete here?
+  }
+
+  fn fetch(&mut self) -> Option<(Entry, T)> {
+    while let Some(entry) = self.current.pop_todo() {
+      if let Some(&key) = self.key_map.get(&entry) {
+        return Some((entry, self.tasks.get_mut(key).expect("tasks").take()))
+      }
+    }
+    None
+  }
+
+  fn callback(&mut self, _entry: Entry, _idx: usize, p: Self::Message) {
+    if let Some(cb) = self.callback.as_mut() {
+      cb(p)
+    }
+  }
 }
 
 pub struct PriorityTasks<Priority: Ord + Copy, Task: crate::core::Task> {
   state: Arc<Mutex<PriorityTasksState<Priority, Task>>>,
-  tx: (),
-  main: (),
-  capacity: usize,
-  worker: Vec<()>,
+  scheduler: Scheduler<Entry, Task, PriorityTasksState<Priority, Task>>,
 }
 impl<O: Ord + Copy, T: Task> PriorityTasks<O, T> {
   pub fn new(capacity: usize, finished_capacity: Option<usize>, callback: Option<impl Callback<T> + Send + 'static>) -> Self {
+    let state = Arc::new(Mutex::new(PriorityTasksState::new(capacity, finished_capacity, callback)));
     Self {
-      state: Arc::new(Mutex::new(PriorityTasksState::new(capacity, finished_capacity, callback))),
-      tx: (),
-      main: (),
-      capacity,
-      worker: vec![],
+      state: state.clone(),
+      scheduler: Scheduler::new(capacity, state),
     }
   }
 
   pub fn update<F: FnOnce(&mut PriorityTasksState<O, T>)>(&self, f: F) {
     f(&mut self.state.lock().unwrap())
+  }
+}
+
+impl<O: Ord + Copy, I, T: Task<Item=(usize, I)> + Unpin + Send + 'static> PriorityTasks<O, T>
+  where <T::Controller as AsProgress>::Progress: Send + 'static, PriorityTasksState<O, T>: Send + 'static {
+  pub fn scheduler(&mut self) {
+    self.scheduler.spawn();
   }
 }
