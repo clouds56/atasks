@@ -7,6 +7,7 @@ pub trait AsProgress {
   // fn restore(v: serde_json::Value) -> Self;
 }
 
+#[delegatable_trait]
 pub trait Control: AsProgress {
   fn pause(&mut self);
   fn unpause(&mut self);

@@ -107,7 +107,7 @@ impl<T: TaskQueueData + Unpin> Task for TaskQueue<T> {
 }
 
 impl<T: TaskQueueData + Unpin> Stream for TaskQueue<T> {
-  type Item = <T::Fut as Future>::Output;
+  type Item = (usize, <T::Fut as Future>::Output);
   fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
     if let Ok(state) = self.state.lock() {
       if state.is_paused() {
@@ -127,7 +127,7 @@ impl<T: TaskQueueData + Unpin> Stream for TaskQueue<T> {
     }).map(|(k, idx, e)| {
       let check = self.data.check(idx, &e);
       self.current_pop(k, check);
-      e
+      (idx, e)
     });
     while !self.is_stopped() && self.current.len() < self.capacity {
       if let Some((idx, item)) = self.next_idx() {
@@ -162,6 +162,9 @@ struct State {
   paused: bool,
   stopped: bool,
 }
+// TODO: https://github.com/hobofan/ambassador/issues/20
+// #[derive(Delegate)]
+// #[delegate(Control, target = "self.0.lock().unwrap()")]
 pub struct Controller(Arc<Mutex<State>>);
 
 impl State {
@@ -206,7 +209,7 @@ impl Control for State {
     !self.paused && !self.stopped &&
     self.current == 0 &&
     Some(self.idx) == self.total &&
-    self.failed == 0
+    self.failed == self.processed - self.items
   }
 }
 
