@@ -4,5 +4,6 @@
 pub mod common;
 pub mod queue;
 pub mod tasks;
+pub mod scheduler;
 
 pub use self::core::*;
