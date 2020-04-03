@@ -5,5 +5,7 @@ pub mod common;
 pub mod queue;
 pub mod tasks;
 pub mod scheduler;
+#[cfg(test)]
+pub(crate) mod test;
 
 pub use self::core::*;

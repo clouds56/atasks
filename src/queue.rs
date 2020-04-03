@@ -234,27 +234,14 @@ impl Control for Controller {
 #[cfg(test)]
 mod test {
   use super::*;
+  use crate::test::*;
   use futures::StreamExt;
-
-  struct Data(usize);
-  impl TaskQueueData for Data {
-    type Item = usize;
-    type Fut = Pin<Box<dyn Future<Output=usize>+Send>>;
-    fn size_hint(&self) -> (usize, Option<usize>) { (self.0, Some(self.0)) }
-    fn check(&mut self, _idx: usize, _result: &usize) -> bool { true }
-    fn next(&mut self, idx: usize) -> (usize, Option<Self::Item>) {
-      (idx, if idx < self.0 { Some(idx) } else { None })
-     }
-    fn run(&self, &id: &usize) -> Self::Fut {
-      Box::pin(async move { Wake(id).map(|()| id).await })
-    }
-  }
 
   #[test]
   fn test_task_queue() {
     futures::executor::block_on(async move {
       // let mut t = HistoryTask::from_queue(HistoryTaskData::new(Id(0), (1..5).map(Id).collect()), 3);
-      let mut t = TaskQueue::from_queue(Data(5), 3);
+      let mut t = TaskQueue::from_queue(QueueData(5), 3);
       // println!("{:?}", t.next().await);
       let mut k = 0;
       while let Some(i) = t.next().await {
@@ -266,23 +253,10 @@ mod test {
     })
   }
 
-  #[derive(Default)]
-  struct Counter(usize);
-  impl<T> std::iter::FromIterator<T> for Counter {
-    fn from_iter<I: std::iter::IntoIterator<Item = T>>(iter: I) -> Self {
-      Self(iter.into_iter().fold(0, |acc, _| acc+1))
-    }
-  }
-  impl<T> std::iter::Extend<T> for Counter {
-    fn extend<I: std::iter::IntoIterator<Item = T>>(&mut self, iter: I) {
-      self.0 += iter.into_iter().fold(0, |acc, _| acc+1)
-    }
-  }
-
   #[test]
   fn test_task_stop() {
     futures::executor::block_on(async move {
-      let mut t = TaskQueue::from_queue(Data(5), 3);
+      let mut t = TaskQueue::from_queue(QueueData(5), 3);
       let mut controller = t.controller();
       assert_eq!(t.is_stopped(), false);
       controller.stop();
@@ -294,20 +268,6 @@ mod test {
       assert_eq!((&mut t).collect::<Counter>().await.0, 5);
       assert_eq!(t.is_finished(), true);
     })
-  }
-  struct Wake(usize);
-  impl Future for Wake {
-    type Output = ();
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
-      println!("wake {}", self.0);
-      if self.0 == 0 {
-        Poll::Ready(())
-      } else {
-        self.0 -= 1;
-        cx.waker().wake_by_ref();
-        Poll::Pending
-      }
-    }
   }
 
   #[test]

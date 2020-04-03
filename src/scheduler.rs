@@ -19,26 +19,51 @@ pub enum Message<E, P, T> {
   Finish(usize, E, T),
   NewWorker(usize),
   Flush,
+  Close,
+}
+
+enum MaybeJoin<T> {
+  Join(JoinHandle<T>),
+  Some(T),
+  Uninit,
+}
+impl<T> MaybeJoin<T> {
+  fn update<F: FnOnce(T) -> Self>(&mut self, f: F) {
+    if let MaybeJoin::Some(_) = self {
+      if let MaybeJoin::Some(t) = std::mem::replace(self, MaybeJoin::Uninit) {
+        std::mem::replace(self, f(t));
+      }
+    }
+  }
+  fn join(&mut self) {
+    if let MaybeJoin::Join(_) = self {
+      if let MaybeJoin::Join(t) = std::mem::replace(self, MaybeJoin::Uninit) {
+        std::mem::replace(self, MaybeJoin::Some(t.join().expect("join failed")));
+      }
+    }
+  }
+  fn is_join(&self) -> bool { if let MaybeJoin::Join(_) = self { true } else { false } }
+  fn is_some(&self) -> bool { if let MaybeJoin::Some(_) = self { true } else { false } }
 }
 
 pub struct Worker<E, P, T> {
   idx: usize,
-  rx: Option<Receiver<(E, T)>>,
   tx: Sender<Message<E, P, T>>,
+  handler: MaybeJoin<Receiver<Option<(E, T)>>>,
 }
 
 impl<E, P, T> Worker<E, P, T> {
-  pub fn new(idx: usize, rx: Receiver<(E, T)>, tx: Sender<Message<E, P, T>>) -> Self {
-    Self { idx, rx: Some(rx), tx }
+  pub fn new(idx: usize, rx: Receiver<Option<(E, T)>>, tx: Sender<Message<E, P, T>>) -> Self {
+    Self { idx, tx, handler: MaybeJoin::Some(rx) }
   }
 }
 
 impl<E: Copy, I, P, T: Task<Item=(usize, I)> + Unpin> Worker<E, P, T>
   where P: From<<T::Controller as AsProgress>::Progress> {
-  pub fn event_loop(idx: usize, rx: Receiver<(E, T)>, tx: Sender<Message<E, P, T>>) -> Receiver<(E, T)> {
+  pub fn event_loop(idx: usize, rx: Receiver<Option<(E, T)>>, tx: Sender<Message<E, P, T>>) -> Receiver<Option<(E, T)>> {
     use futures::StreamExt;
     futures::executor::block_on(async {
-      while let Ok((entry, mut t)) = rx.recv() {
+      while let Ok(Some((entry, mut t))) = rx.recv() {
         let controller = t.controller();
         while let Some((i, _)) = t.next().await {
           let _ = tx.send(Message::Progress(idx, entry, i, controller.progress().into()));
@@ -53,34 +78,41 @@ impl<E: Copy, I, P, T: Task<Item=(usize, I)> + Unpin> Worker<E, P, T>
 impl<E: Copy + Send + 'static, I, P, T: Task<Item=(usize, I)> + Unpin + Send + 'static> Worker<E, P, T>
   where P: From<<T::Controller as AsProgress>::Progress> + Send + 'static {
   fn spawn(&mut self) {
-    let rx = self.rx.take().expect("worker already spawn");
     let tx = self.tx.clone();
     let idx = self.idx;
-    std::thread::spawn(move || { Self::event_loop(idx, rx, tx); });
+    self.handler.update(move |rx| {
+      MaybeJoin::Join(std::thread::spawn(move || { Self::event_loop(idx, rx, tx) }))
+    })
+  }
+  fn join(&mut self) {
+    self.handler.join();
   }
 }
 
 
-type Dispatcher<E, T> = HashMap<usize, (Sender<(E, T)>, bool)>;
+type Dispatcher<E, T> = HashMap<usize, (Sender<Option<(E, T)>>, bool)>;
 
 pub struct Scheduler<E, T, S: Schedulable<E, T>> {
-  mrx: Option<Receiver<Message<E, S::Message, T>>>,
-  mtx: Sender<Message<E, S::Message, T>>,
+  tx: Sender<Message<E, S::Message, T>>,
   capacity: usize,
   dispatcher: Arc<Mutex<Dispatcher<E, T>>>,
   workers: Vec<Worker<E, S::Message, T>>,
   state: Arc<Mutex<S>>,
-  handler: Option<JoinHandle<()>>,
+  handler: MaybeJoin<Receiver<Message<E, S::Message, T>>>,
 }
 
 impl<E, T, S: Schedulable<E, T>> Scheduler<E, T, S> {
   pub fn new(capacity: usize, state: Arc<Mutex<S>>) -> Self {
-    let (mtx, mrx) = channel();
+    let (tx, rx) = channel();
     Self {
-      mtx, mrx: Some(mrx), state, capacity,
+      tx, state, capacity,
       dispatcher: Arc::new(Mutex::new(Dispatcher::new())),
-      workers: Vec::new(), handler: None,
+      workers: Vec::new(), handler: MaybeJoin::Some(rx),
     }
+  }
+
+  pub fn flush(&self) {
+    let _ = self.tx.send(Message::Flush);
   }
 }
 
@@ -90,53 +122,127 @@ impl<E: Copy + Send + 'static, I, T: Task<Item=(usize, I)> + Unpin + Send + 'sta
     if self.workers.len() >= self.capacity { return }
     let (tx, rx) = channel();
     let idx = self.workers.len();
-    let mut worker = Worker::new(idx, rx, self.mtx.clone());
-    self.dispatcher.lock().unwrap().insert(idx, (tx, false));
+    let mut worker = Worker::new(idx, rx, self.tx.clone());
+    self.dispatcher.lock().unwrap().insert(idx, (tx, true));
     worker.spawn();
     self.workers.push(worker);
-    let _ = self.mtx.send(Message::NewWorker(idx));
+    let _ = self.tx.send(Message::NewWorker(idx));
+  }
+
+  pub fn new_workers(&mut self) {
+    (self.workers.len()..self.capacity).for_each(|_| self.new_worker());
+  }
+  pub fn join_workers(&mut self) {
+    self.workers.iter_mut().for_each(|w| w.join());
   }
 }
 
 impl<E: Copy, I, T: Task<Item=(usize, I)> + Unpin, S: Schedulable<E, T>> Scheduler<E, T, S> {
   fn event_loop(rx: Receiver<Message<E, S::Message, T>>, dispatcher: Arc<Mutex<Dispatcher<E, T>>>, state: Arc<Mutex<S>>) -> Receiver<Message<E, S::Message, T>> {
+    let mut retry = None;
     while let Ok(m) = rx.recv() {
       match m {
         Message::Finish(i, entry, task) => {
           let mut state = state.lock().unwrap();
           state.restore(entry, task);
-          if let Some((entry, task)) = state.fetch() {
-          // TODO: dispatch to other thread if failed
-            let _ = dispatcher.lock().unwrap().get(&i).unwrap().0.send((entry, task));
+          if let Some((entry, task)) = retry.or_else(|| state.fetch()) {
+            retry = dispatcher.lock().unwrap().get(&i).unwrap().0.send(Some((entry, task))).err().map(|e| e.0.unwrap());
           } else {
+            retry = None;
             dispatcher.lock().unwrap().get_mut(&i).unwrap().1 = true;
+            state.flush();
           }
         },
         Message::Progress(_, entry, idx, p) => {
           let mut state = state.lock().unwrap();
           state.callback(entry, idx, p.into());
+          continue;
+        },
+        Message::NewWorker(_) => continue,
+        Message::Close => {
+          dispatcher.lock().unwrap().values().for_each(|(v, _)| {
+            let _ = v.send(None);
+          });
+          break
+        },
+        Message::Flush => {
+          let mut state = state.lock().unwrap();
+          state.flush();
         }
-        _ => unimplemented!(),
+      }
+      for (_, v) in dispatcher.lock().unwrap().iter_mut() {
+        if v.1 {
+          let mut state = state.lock().unwrap();
+          if let Some((entry, task)) = retry.or_else(|| state.fetch()) {
+            retry = v.0.send(Some((entry, task))).err().map(|e| e.0.unwrap());
+            v.1 = false;
+          } else {
+            retry = None;
+          }
+        }
       }
     }
     rx
   }
 
   pub fn run(&mut self) {
-    let mrx = self.mrx.take().expect("already spawn");
+    if !self.handler.is_some() { return }
     let state = self.state.clone();
     let dispatcher = self.dispatcher.clone();
-    self.mrx = Some(Self::event_loop(mrx, dispatcher, state));
+    self.handler.update(|rx| MaybeJoin::Some(Self::event_loop(rx, dispatcher, state)));
   }
 }
 
 impl<E: Copy + Send + 'static, I, T: Task<Item=(usize, I)> + Unpin + Send + 'static, S: Schedulable<E, T> + Send + 'static> Scheduler<E, T, S>
   where S::Message: Send + 'static {
   pub fn spawn(&mut self) {
-    if self.handler.is_some() { return }
-    let mrx = self.mrx.take().expect("already spawn");
+    if !self.handler.is_some() { return }
     let state = self.state.clone();
     let dispatcher = self.dispatcher.clone();
-    self.handler = Some(std::thread::spawn(|| { Self::event_loop(mrx, dispatcher, state); }));
+    self.handler.update(|rx| {
+      MaybeJoin::Join(std::thread::spawn(|| { Self::event_loop(rx, dispatcher, state) }))
+    });
+  }
+
+  pub fn join(&mut self) {
+    if !self.handler.is_join() { return }
+    let _ = self.tx.send(Message::Close);
+    self.handler.join()
+  }
+}
+
+#[cfg(test)]
+mod test {
+  use crate::queue::TaskQueue;
+  use crate::test::*;
+  use super::*;
+  struct Sc(usize);
+  impl Schedulable<usize, T> for Sc {
+    type Message = <<T as Task>::Controller as AsProgress>::Progress;
+    fn flush(&mut self) { }
+    fn restore(&mut self, _entry: E, _task: T) {
+      // println!("restore {}", entry);
+    }
+    fn fetch(&mut self) -> Option<(E, T)> {
+      self.0 += 1;
+      // println!("fetch {}", self.0);
+      Some((self.0, TaskQueue::from_queue(QueueData(10), 3)))
+    }
+    fn callback(&mut self, _entry: E, _idx: usize, _p: Self::Message) {}
+  }
+  type E = usize;
+  type T = TaskQueue<QueueData>;
+  type S = Scheduler<usize, T, Sc>;
+  #[test]
+  fn test_scheduler() {
+    let mut s = S::new(3, Arc::new(Mutex::new(Sc(0))));
+    s.new_workers();
+    s.spawn();
+    assert_eq!(s.workers.len(), 3);
+    let _ = s.tx.send(Message::Flush);
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    println!("scheduled {} tasks", s.state.lock().unwrap().0);
+    s.join();
+    s.join_workers();
   }
 }

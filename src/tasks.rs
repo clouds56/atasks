@@ -214,13 +214,20 @@ impl<O: Ord + Copy, T: Task> PriorityTasks<O, T> {
   }
 
   pub fn update<F: FnOnce(&mut PriorityTasksState<O, T>)>(&self, f: F) {
-    f(&mut self.state.lock().unwrap())
+    f(&mut self.state.lock().unwrap());
+    self.scheduler.flush();
   }
 }
 
 impl<O: Ord + Copy, I, T: Task<Item=(usize, I)> + Unpin + Send + 'static> PriorityTasks<O, T>
   where <T::Controller as AsProgress>::Progress: Send + 'static, PriorityTasksState<O, T>: Send + 'static {
   pub fn scheduler(&mut self) {
+    self.scheduler.new_workers();
     self.scheduler.spawn();
+  }
+
+  pub fn finalize(&mut self) {
+    self.scheduler.join();
+    self.scheduler.join_workers();
   }
 }
