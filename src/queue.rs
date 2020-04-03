@@ -10,13 +10,16 @@ use futures::{Stream, FutureExt};
 use crate::core::*;
 
 // it is like Iterator, but not the same
-pub trait TaskQueueData {
+pub trait TaskQueueData: Sized {
   type Item;
   type Fut: Future + Unpin + Send;
   fn size_hint(&self) -> (usize, Option<usize>);
   fn check(&mut self, idx: usize, result: &<Self::Fut as Future>::Output) -> bool;
   fn next(&mut self, idx: usize) -> (usize, Option<Self::Item>);
   fn run(&self, id: &Self::Item) -> Self::Fut;
+  fn build(self, capacity: usize) -> TaskQueue<Self> {
+    TaskQueue::from_queue(self, capacity)
+  }
 }
 
 pub struct TaskQueue<T: TaskQueueData> {
