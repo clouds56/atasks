@@ -79,8 +79,8 @@ impl<E: Copy + Debug, I, P, T: Task<Item=(usize, I)> + Unpin> Worker<E, P, T>
   }
 }
 
-impl<E: Copy + Debug + Send + 'static, I, P, T: Task<Item=(usize, I)> + Unpin + Send + 'static> Worker<E, P, T>
-  where P: From<<T::Controller as AsProgress>::Progress> + Send + 'static {
+impl<E: Copy + Debug, I, P, T: Task<Item=(usize, I)> + Unpin> Worker<E, P, T>
+  where E: Send + 'static, T: Send + 'static, P: From<<T::Controller as AsProgress>::Progress> + Send + 'static {
   fn spawn(&mut self) {
     let tx = self.tx.clone();
     let idx = self.idx;
@@ -160,7 +160,7 @@ impl<E: Copy, I, T: Task<Item=(usize, I)> + Unpin, S: Schedulable<E, T>> Schedul
         },
         Message::Progress(_, entry, idx, p) => {
           let mut state = state.lock().unwrap();
-          state.callback(entry, idx, p.into());
+          state.callback(entry, idx, p);
           continue;
         },
         Message::NewWorker(_) => continue,
@@ -207,8 +207,8 @@ impl<E: Copy, I, T: Task<Item=(usize, I)> + Unpin, S: Schedulable<E, T>> Schedul
   }
 }
 
-impl<E: Copy + Send + 'static, I, T: Task<Item=(usize, I)> + Unpin + Send + 'static, S: Schedulable<E, T> + Send + 'static> Scheduler<E, T, S>
-  where S::Message: Send + 'static {
+impl<E: Copy, I, T: Task<Item=(usize, I)> + Unpin, S: Schedulable<E, T>> Scheduler<E, T, S>
+  where E: Send + 'static, T: Send + 'static, S: Send + 'static, S::Message: Send + 'static {
   pub fn spawn(&mut self) {
     if !self.handler.is_some() { return }
     let state = self.state.clone();

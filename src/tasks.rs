@@ -90,6 +90,7 @@ pub struct PriorityTasksState<O, T: Task> {
   finished: VecDeque<(Entry, T)>,
   capacity: usize,
   finished_capacity: Option<usize>,
+  #[allow(clippy::type_complexity)]
   callback: Option<Box<dyn FnMut(<<T as Task>::Controller as AsProgress>::Progress) + Send>>,
 }
 

@@ -12,6 +12,42 @@ use crate::core::*;
 pub enum TaskResult {
   Success, Retry, Failed,
 }
+pub trait AsTaskResult {
+  fn or_retry(&self) -> TaskResult;
+  fn or_failed(&self) -> TaskResult;
+}
+impl AsTaskResult for Option<bool> {
+  fn or_retry(&self) -> TaskResult {
+    match self {
+      Some(true) => TaskResult::Success,
+      Some(false) => TaskResult::Retry,
+      _ => TaskResult::Failed,
+    }
+  }
+  fn or_failed(&self) -> TaskResult {
+    match self {
+      Some(true) => TaskResult::Success,
+      Some(false) => TaskResult::Failed,
+      _ => TaskResult::Failed,
+    }
+  }
+}
+impl AsTaskResult for bool {
+  fn or_retry(&self) -> TaskResult {
+    if *self {
+      TaskResult::Success
+    } else {
+      TaskResult::Retry
+    }
+  }
+  fn or_failed(&self) -> TaskResult {
+    if *self {
+      TaskResult::Success
+    } else {
+      TaskResult::Failed
+    }
+  }
+}
 
 // it is like Iterator, but not the same
 pub trait TaskQueueData: Sized {
