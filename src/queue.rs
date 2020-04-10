@@ -9,12 +9,20 @@ use futures::{Stream, FutureExt};
 
 use crate::core::*;
 
+pub enum TaskResult {
+  Success, Retry, Failed,
+}
+
 // it is like Iterator, but not the same
 pub trait TaskQueueData: Sized {
   type Item;
   type Fut: Future + Unpin + Send;
-  fn size_hint(&self) -> (usize, Option<usize>);
-  fn check(&mut self, idx: usize, result: &<Self::Fut as Future>::Output) -> bool;
+  fn size_hint(&self) -> (usize, Option<usize>) {
+    (0, None)
+  }
+  fn check(&mut self, _idx: usize, _result: &<Self::Fut as Future>::Output) -> TaskResult {
+    TaskResult::Success
+  }
   fn next(&mut self, idx: usize) -> (usize, Option<Self::Item>);
   fn run(&self, id: &Self::Item) -> Self::Fut;
   fn build(self, capacity: usize) -> TaskQueue<Self> {
@@ -76,13 +84,17 @@ impl<T: TaskQueueData> TaskQueue<T> {
     state.current += 1;
     state.processed += 1;
   }
-  fn current_pop(&mut self, k: usize, check: bool) {
+  fn current_pop(&mut self, k: usize, check: TaskResult) {
     let mut state = self.state.lock().unwrap();
     let (idx, item, _) = self.current.swap_remove(k);
-    if !check {
-      self.queue.push_back((idx, item));
-      state.failed += 1;
-    }
+    match check {
+      TaskResult::Success => (),
+      TaskResult::Failed => state.failed += 1,
+      TaskResult::Retry => {
+        self.queue.push_back((idx, item));
+        state.retries += 1;
+      },
+    };
     state.current -= 1;
   }
   pub fn is_paused(&self) -> bool {
@@ -157,12 +169,14 @@ impl<T: TaskQueueData + Unpin> Stream for TaskQueue<T> {
 
 struct State {
   idx: usize,
-  items: usize, // count next(), = success_items + failed_items + current_items
-  current: usize, // = current_items, completed = success_items
-  failed: usize, // => failed_items = items - completed - current
+  items: usize, // success_items + failed_items + retried_items + current_items
+  current: usize, // current_items
+      // completed = success_items = processed - current - failed - retries
+  failed: usize, // failed_items
+  retries: usize, // => retried_items = items - completed - current - fail
   total_hint: usize,
   total: Option<usize>,
-  processed: usize, // = current + failed + completed
+  processed: usize, // current + failed + retries + completed
   paused: bool,
   stopped: bool,
 }
@@ -174,22 +188,24 @@ pub struct Controller(Arc<Mutex<State>>);
 impl State {
   fn new(size_hint: (usize, Option<usize>)) -> Self {
     Self {
-      idx: 0, items: 0, current: 0, failed: 0,
+      idx: 0, items: 0, current: 0, failed: 0, retries: 0,
       processed: 0, total_hint: size_hint.0, total: None,
       paused: false, stopped: false, }
   }
   fn total(&self) -> usize {
     self.total.unwrap_or(self.total_hint)
   }
+  fn completed(&self) -> usize {
+    self.processed - self.current - self.failed - self.retries
+  }
 }
 impl AsProgress for State {
   type Progress = Progress;
   fn progress(&self) -> Self::Progress {
-    let completed = self.processed - self.current - self.failed;
-    let failed = self.items - completed - self.current;
     Progress {
       current: self.current,
-      completed, failed,
+      completed: self.completed(),
+      failed: self.failed,
       processed: Some(self.processed),
       total: self.total(),
     }
@@ -213,7 +229,7 @@ impl Control for State {
     !self.paused && !self.stopped &&
     self.current == 0 &&
     Some(self.idx) == self.total &&
-    self.failed == self.processed - self.items
+    self.completed() + self.failed == self.items
   }
 }
 

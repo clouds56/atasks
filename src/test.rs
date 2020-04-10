@@ -36,7 +36,6 @@ impl TaskQueueData for QueueData {
   type Item = usize;
   type Fut = Pin<Box<dyn Future<Output=usize>+Send>>;
   fn size_hint(&self) -> (usize, Option<usize>) { (self.0, Some(self.0)) }
-  fn check(&mut self, _idx: usize, _result: &usize) -> bool { true }
   fn next(&mut self, idx: usize) -> (usize, Option<Self::Item>) {
     (idx, if idx < self.0 { Some(idx) } else { None })
    }
