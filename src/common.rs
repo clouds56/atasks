@@ -4,25 +4,17 @@ use std::task::{Poll, Context};
 use std::pin::Pin;
 use futures::Stream;
 
-#[derive(Delegate)]
-#[delegate(Control)]
-struct ControllerBox<P: Into<Progress>>(Box<dyn Control<Progress=P>>);
-impl<P: Into<Progress>> AsProgress for ControllerBox<P> {
-  type Progress = Progress;
-  fn progress(&self) -> Progress { self.0.progress().into() }
-}
-#[derive(Delegate)]
-#[delegate(Control)]
-pub struct Controller(ControllerBox<Progress>);
-impl AsProgress for Controller {
-  type Progress = Progress;
-  fn progress(&self) -> Progress { self.0.progress() }
-}
+pub struct Controller(Box<dyn Control>);
+
 impl Controller {
-  pub fn from<P: Into<Progress> + 'static, T: Control<Progress=P> + 'static>(controller: T) -> Self {
-    Self(ControllerBox(Box::new(ControllerBox::<P>(Box::new(controller)))))
+  pub fn from<T: Control + 'static>(controller: T) -> Self {
+    Self(Box::new(controller))
   }
 }
+impl Control for Controller {
+  ambassador_impl_Control_body_single_struct!{0}
+}
+
 
 // SomeController => ControllerBox<P> => ControllerBox<Progress>
 
@@ -38,7 +30,7 @@ impl<C: Control, I> Stream for TaskBox<C, I> {
     }
   }
 }
-impl<P: Into<Progress> + 'static, C: Control<Progress=P> + 'static, I> Task for TaskBox<C, I> {
+impl<C: Control + 'static, I> Task for TaskBox<C, I> {
   type Controller = Controller;
   fn controller(&self) -> Controller { Controller::from(self.0.controller()) }
 }
@@ -55,8 +47,8 @@ impl Task for GeneralTask {
   fn controller(&self) -> Controller { self.0.controller() }
 }
 impl GeneralTask {
-  pub fn from<P: Into<Progress>, C: Control<Progress=P>, I, T: Task<Controller=C, Item=(usize, I)>>(task: T) -> Self
-    where P: 'static, C: 'static, I: 'static, T: 'static {
+  pub fn from<C: Control, I, T: Task<Controller=C, Item=(usize, I)>>(task: T) -> Self
+    where C: 'static, I: 'static, T: 'static {
     Self(TaskBox(Box::pin(TaskBox::<C, I>(Box::pin(task)))))
   }
 }

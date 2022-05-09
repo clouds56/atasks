@@ -20,7 +20,7 @@ impl<Task> TaskToRun<Task> {
     if let TaskToRun::Todo(_) = self {
       panic!("restore to task that occupies");
     }
-    std::mem::replace(self, TaskToRun::Todo(t));
+    *self = TaskToRun::Todo(t)
   }
 }
 
@@ -75,9 +75,8 @@ impl<K: Ord + Copy + std::fmt::Debug> Current<K> {
 
 pub struct State;
 
-// TODO: ICE https://github.com/rust-lang/rust/issues/70746
-pub trait Callback<T: Task>: FnMut(<<T as Task>::Controller as AsProgress>::Progress) {}
-impl<T: Task, F: FnMut(<<T as Task>::Controller as AsProgress>::Progress)> Callback<T> for F { }
+pub trait Callback<T: Task>: FnMut(Progress) {}
+impl<T: Task, F: FnMut(Progress)> Callback<T> for F { }
 
 pub struct PriorityTasksState<O, T: Task> {
   idx: Entry,
@@ -90,8 +89,7 @@ pub struct PriorityTasksState<O, T: Task> {
   finished: VecDeque<(Entry, T)>,
   capacity: usize,
   finished_capacity: Option<usize>,
-  #[allow(clippy::type_complexity)]
-  callback: Option<Box<dyn FnMut(<<T as Task>::Controller as AsProgress>::Progress) + Send>>,
+  callback: Option<Box<dyn FnMut(Progress) + Send>>,
 }
 
 impl<O: Ord + Copy, T: Task> PriorityTasksState<O, T> {
@@ -110,7 +108,7 @@ impl<O: Ord + Copy, T: Task> PriorityTasksState<O, T> {
     }
   }
   fn new_with_callback(capacity: usize, finished_capacity: Option<usize>, callback: impl Callback<T> + Send + 'static) -> Self {
-    let callback: Box<dyn FnMut(<<T as Task>::Controller as AsProgress>::Progress) + Send> = Box::new(callback);
+    let callback: Box<dyn FnMut(Progress) + Send> = Box::new(callback);
     Self {
       callback: Some(callback),
       ..Self::new(capacity, finished_capacity)
@@ -177,7 +175,7 @@ impl<O: Ord + Copy, T: Task> PriorityTasksState<O, T> {
 }
 
 impl<O: Ord + Copy, T: Task> Schedulable<Entry, T> for PriorityTasksState<O, T> {
-  type Message = <T::Controller as AsProgress>::Progress;
+  type Message = Progress;
   fn flush(&mut self) {
     while self.finished_capacity.map(|cap| self.finished.len() > cap) == Some(true) {
       self.finished.pop_front();
@@ -258,7 +256,7 @@ impl<O: Ord + Copy, T: Task> PriorityTasks<O, T> {
 }
 
 impl<O: Ord + Copy, I, T: Task<Item=(usize, I)> + Unpin + Send + 'static> PriorityTasks<O, T>
-  where <T::Controller as AsProgress>::Progress: Send + 'static, PriorityTasksState<O, T>: Send + 'static {
+  where PriorityTasksState<O, T>: Send + 'static {
   pub fn schedule(&mut self) {
     self.scheduler.new_workers();
     self.scheduler.spawn();

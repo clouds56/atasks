@@ -203,78 +203,14 @@ impl<T: TaskQueueData + Unpin> Stream for TaskQueue<T> {
   }
 }
 
-struct State {
-  idx: usize,
-  items: usize, // success_items + failed_items + retried_items + current_items
-  current: usize, // current_items
-      // completed = success_items = processed - current - failed - retries
-  failed: usize, // failed_items
-  retries: usize, // => retried_items = items - completed - current - fail
-  total_hint: usize,
-  total: Option<usize>,
-  processed: usize, // current + failed + retries + completed
-  paused: bool,
-  stopped: bool,
-}
 // TODO: https://github.com/hobofan/ambassador/issues/20
 // #[derive(Delegate)]
 // #[delegate(Control, target = "self.0.lock().unwrap()")]
 pub struct Controller(Arc<Mutex<State>>);
 
-impl State {
-  fn new(size_hint: (usize, Option<usize>)) -> Self {
-    Self {
-      idx: 0, items: 0, current: 0, failed: 0, retries: 0,
-      processed: 0, total_hint: size_hint.0, total: None,
-      paused: false, stopped: false, }
-  }
-  fn total(&self) -> usize {
-    self.total.unwrap_or(self.total_hint)
-  }
-  fn completed(&self) -> usize {
-    self.processed - self.current - self.failed - self.retries
-  }
-}
-impl AsProgress for State {
-  type Progress = Progress;
-  fn progress(&self) -> Self::Progress {
-    Progress {
-      current: self.current,
-      completed: self.completed(),
-      failed: self.failed,
-      processed: Some(self.processed),
-      total: self.total(),
-    }
-  }
-}
-impl Control for State {
-  fn pause(&mut self) { self.paused = true }
-  fn unpause(&mut self) {
-    if !self.stopped { self.paused = false }
-  }
-  fn stop(&mut self) { self.stopped = true }
-  fn resume(&mut self) {
-    if !self.paused { self.stopped = false }
-   }
-  fn shutdown(&mut self) { self.paused = true; self.stopped = true }
-  fn is_paused(&self) -> bool { self.paused }
-  fn is_stopped(&self) -> bool { self.stopped }
-  fn is_shutdown(&self) -> bool { self.paused && self.stopped }
-  fn is_running(&self) -> bool { !self.paused && !self.stopped }
-  fn is_finished(&self) -> bool {
-    !self.paused && !self.stopped &&
-    self.current == 0 &&
-    Some(self.idx) == self.total &&
-    self.completed() + self.failed == self.items
-  }
-}
-
-impl AsProgress for Controller {
-  type Progress = Progress;
-  fn progress(&self) -> Self::Progress { self.0.lock().unwrap().progress() }
-}
 impl Control for Controller {
   // TODO delegate
+  fn progress(&self) -> Progress { self.0.lock().unwrap().progress() }
   fn pause(&mut self) { self.0.lock().unwrap().pause() }
   fn unpause(&mut self) { self.0.lock().unwrap().unpause() }
   fn stop(&mut self) { self.0.lock().unwrap().stop() }

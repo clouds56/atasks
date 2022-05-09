@@ -21,7 +21,7 @@ impl Calc {
     use rand::Rng;
     let t = (i * 20.0 % 1000.0) as u64;
     async_std::task::sleep(std::time::Duration::from_millis(t)).await;
-    let p: u32 = rand::thread_rng().gen_range(0, 100);
+    let p: u32 = rand::thread_rng().gen_range(0..100);
     if p < 5 {
       return Err(true)
     } else if p < 20 {

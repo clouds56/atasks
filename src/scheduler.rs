@@ -33,14 +33,14 @@ impl<T> MaybeJoin<T> {
   fn update<F: FnOnce(T) -> Self>(&mut self, f: F) {
     if let MaybeJoin::Some(_) = self {
       if let MaybeJoin::Some(t) = std::mem::replace(self, MaybeJoin::Uninit) {
-        std::mem::replace(self, f(t));
+        *self = f(t)
       }
     }
   }
   fn join(&mut self) {
     if let MaybeJoin::Join(_) = self {
       if let MaybeJoin::Join(t) = std::mem::replace(self, MaybeJoin::Uninit) {
-        std::mem::replace(self, MaybeJoin::Some(t.join().expect("join failed")));
+        *self =MaybeJoin::Some(t.join().expect("join failed"))
       }
     }
   }
@@ -61,7 +61,7 @@ impl<E, P, T> Worker<E, P, T> {
 }
 
 impl<E: Copy + Debug, I, P, T: Task<Item=(usize, I)> + Unpin> Worker<E, P, T>
-  where P: From<<T::Controller as AsProgress>::Progress> {
+  where P: From<Progress> {
   pub fn event_loop(idx: usize, rx: Receiver<Option<(E, T)>>, tx: Sender<Message<E, P, T>>) -> Receiver<Option<(E, T)>> {
     use futures::StreamExt;
     futures::executor::block_on(async {
@@ -80,7 +80,7 @@ impl<E: Copy + Debug, I, P, T: Task<Item=(usize, I)> + Unpin> Worker<E, P, T>
 }
 
 impl<E: Copy + Debug, I, P, T: Task<Item=(usize, I)> + Unpin> Worker<E, P, T>
-  where E: Send + 'static, T: Send + 'static, P: From<<T::Controller as AsProgress>::Progress> + Send + 'static {
+  where E: Send + 'static, T: Send + 'static, P: From<Progress> + Send + 'static {
   fn spawn(&mut self) {
     let tx = self.tx.clone();
     let idx = self.idx;
@@ -121,7 +121,7 @@ impl<E, T, S: Schedulable<E, T>> Scheduler<E, T, S> {
 }
 
 impl<E: Copy + Debug + Send + 'static, I, T: Task<Item=(usize, I)> + Unpin + Send + 'static, S: Schedulable<E, T>> Scheduler<E, T, S>
-  where S::Message: From<<T::Controller as AsProgress>::Progress> + Send + 'static {
+  where S::Message: From<Progress> + Send + 'static {
   pub fn new_worker(&mut self) {
     if self.workers.len() >= self.capacity { return }
     let (tx, rx) = channel();
@@ -238,7 +238,7 @@ mod test {
   use super::*;
   struct Sc(usize);
   impl Schedulable<usize, T> for Sc {
-    type Message = <<T as Task>::Controller as AsProgress>::Progress;
+    type Message = Progress;
     fn flush(&mut self) { }
     fn restore(&mut self, _entry: E, _task: T) {
       // println!("restore {}", entry);
