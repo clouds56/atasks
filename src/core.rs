@@ -1,4 +1,6 @@
-use futures::Stream;
+use std::pin::Pin;
+
+use futures::{Stream, Future};
 
 #[derive(Debug, Clone)]
 pub struct Progress {
@@ -89,4 +91,26 @@ impl Control for State {
 pub trait Job: Stream {
   type Controller: Control;
   fn controller(&self) -> Self::Controller;
+}
+
+#[async_trait]
+pub trait Task: Sized + Send + 'static {
+  // type Item = Self;
+  type Output: 'static;
+  async fn run(_: Self) -> Self::Output;
+  fn boxed(self) -> Pin<Box<dyn Future<Output=Self::Output>+Send>> {
+    Box::pin(Self::run(self))
+  }
+}
+pub type FutureOf<T> = Pin<Box<dyn Future<Output=<T as Task>::Output>+Send>>;
+
+#[async_trait]
+impl<T: 'static> Task for Pin<Box<dyn Future<Output=T>+Send>> {
+  type Output = T;
+  async fn run(s: Self) -> T {
+    s.await
+  }
+  fn boxed(self) -> Self {
+    self
+  }
 }

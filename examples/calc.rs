@@ -5,19 +5,19 @@ use atasks::jobs::PriorityJobs;
 use atasks::core::*;
 
 use std::collections::HashSet;
-use std::future::Future;
-use std::pin::Pin;
-use std::task::{Poll, Context};
 
 struct Calc {
   data: f64,
-  inner: Pin<Box<dyn Future<Output=Result<f64, bool>>+Send>>,
 }
 impl Calc {
   fn new(i: f64) -> Self {
-    Self { data: i, inner: Box::pin(Self::run(i)) }
+    Self { data: i }
   }
-  async fn run(i: f64) -> Result<f64, bool> {
+}
+#[async_trait::async_trait]
+impl Task for Calc {
+  type Output = Result<(f64, f64), bool>;
+  async fn run(Self { data: i }: Self) -> Self::Output {
     use rand::Rng;
     let t = (i * 20.0 % 1000.0) as u64;
     async_std::task::sleep(std::time::Duration::from_millis(t)).await;
@@ -27,16 +27,7 @@ impl Calc {
     } else if p < 20 {
       return Err(false)
     }
-    Ok(i * i)
-  }
-}
-impl Future for Calc {
-  type Output=Result<(f64, f64), bool>;
-  fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-    match self.inner.as_mut().poll(cx) {
-      Poll::Pending => Poll::Pending,
-      Poll::Ready(result) => Poll::Ready(result.map(|s| (self.data, s))),
-    }
+    Ok((i, i * i))
   }
 }
 
@@ -50,7 +41,7 @@ struct CalcQueueData {
 
 impl TaskQueueData for CalcQueueData {
   type Item = f64;
-  type Fut = Calc;
+  type Task = Calc;
   fn size_hint(&self) -> (usize, Option<usize>) {
     let len = self.data.len();
     (len, Some(len))
@@ -81,7 +72,7 @@ impl TaskQueueData for CalcQueueData {
     let item = self.data[idx];
     (idx, Some(item))
   }
-  fn run(&self, &item: &f64) -> Self::Fut {
+  fn run(&self, &item: &f64) -> Self::Task {
     Calc::new(item)
   }
 }

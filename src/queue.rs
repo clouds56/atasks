@@ -1,5 +1,4 @@
 use std::collections::VecDeque;
-use std::future::Future;
 use std::task::{Poll, Context, Waker};
 use std::pin::Pin;
 use std::marker::Unpin;
@@ -52,15 +51,16 @@ impl AsTaskResult for bool {
 // it is like Iterator, but not the same
 pub trait TaskQueueData: Sized {
   type Item;
-  type Fut: Future + Unpin + Send;
+  // type Fut: Future + Unpin + Send;
+  type Task: Task;
   fn size_hint(&self) -> (usize, Option<usize>) {
     (0, None)
   }
-  fn check(&mut self, _idx: usize, _result: &<Self::Fut as Future>::Output) -> TaskResult {
+  fn check(&mut self, _idx: usize, _result: &<Self::Task as Task>::Output) -> TaskResult {
     TaskResult::Success
   }
   fn next(&mut self, idx: usize) -> (usize, Option<Self::Item>);
-  fn run(&self, id: &Self::Item) -> Self::Fut;
+  fn run(&self, id: &Self::Item) -> Self::Task;
   fn build(self, capacity: usize) -> TaskQueue<Self> {
     TaskQueue::from_queue(self, capacity)
   }
@@ -68,7 +68,7 @@ pub trait TaskQueueData: Sized {
 
 pub struct TaskQueue<T: TaskQueueData> {
   state: Arc<Mutex<State>>,
-  current: Vec<(usize, T::Item, T::Fut)>,
+  current: Vec<(usize, T::Item, FutureOf<T::Task>)>,
   queue: VecDeque<(usize, T::Item)>,
   waker: Cell<Option<Waker>>,
   data: T,
@@ -114,9 +114,9 @@ impl<T: TaskQueueData> TaskQueue<T> {
     }
     self.waker.set(Some(new_waker.clone()));
   }
-  fn current_push(&mut self, idx: usize, item: T::Item, fut: T::Fut) {
+  fn current_push(&mut self, idx: usize, item: T::Item, task: T::Task) {
     let mut state = self.state.lock().unwrap();
-    self.current.push((idx, item, fut));
+    self.current.push((idx, item, task.boxed()));
     state.current += 1;
     state.processed += 1;
   }
@@ -159,7 +159,7 @@ impl<T: TaskQueueData + Unpin> Job for TaskQueue<T> {
 }
 
 impl<T: TaskQueueData + Unpin> Stream for TaskQueue<T> {
-  type Item = (usize, <T::Fut as Future>::Output);
+  type Item = (usize, <T::Task as Task>::Output);
   fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
     if let Ok(state) = self.state.lock() {
       if state.is_paused() {

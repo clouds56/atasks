@@ -34,12 +34,12 @@ impl Future for Wake {
 pub struct QueueData(pub usize);
 impl TaskQueueData for QueueData {
   type Item = usize;
-  type Fut = Pin<Box<dyn Future<Output=usize>+Send>>;
+  type Task = Pin<Box<dyn Future<Output=usize>+Send>>;
   fn size_hint(&self) -> (usize, Option<usize>) { (self.0, Some(self.0)) }
   fn next(&mut self, idx: usize) -> (usize, Option<Self::Item>) {
     (idx, if idx < self.0 { Some(idx) } else { None })
    }
-  fn run(&self, &id: &usize) -> Self::Fut {
+  fn run(&self, &id: &usize) -> Self::Task {
     Box::pin(async move { Wake(id).map(|()| id).await })
   }
 }
