@@ -18,9 +18,9 @@ impl Control for Controller {
 
 // SomeController => ControllerBox<P> => ControllerBox<Progress>
 
-struct TaskBox<C: Control, I>(Pin<Box<dyn Task<Controller=C, Item=(usize, I)>>>);
+struct JobBox<C: Control, I>(Pin<Box<dyn Job<Controller=C, Item=(usize, I)>>>);
 
-impl<C: Control, I> Stream for TaskBox<C, I> {
+impl<C: Control, I> Stream for JobBox<C, I> {
   type Item = (usize, ());
   fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
     match self.0.as_mut().poll_next(cx) {
@@ -30,25 +30,25 @@ impl<C: Control, I> Stream for TaskBox<C, I> {
     }
   }
 }
-impl<C: Control + 'static, I> Task for TaskBox<C, I> {
+impl<C: Control + 'static, I> Job for JobBox<C, I> {
   type Controller = Controller;
   fn controller(&self) -> Controller { Controller::from(self.0.controller()) }
 }
 
-pub struct GeneralTask(TaskBox<Controller, ()>);
-impl Stream for GeneralTask {
+pub struct GeneralJob(JobBox<Controller, ()>);
+impl Stream for GeneralJob {
   type Item = (usize, ());
   fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
     (self.0).0.as_mut().poll_next(cx)
   }
 }
-impl Task for GeneralTask {
+impl Job for GeneralJob {
   type Controller = Controller;
   fn controller(&self) -> Controller { self.0.controller() }
 }
-impl GeneralTask {
-  pub fn from<C: Control, I, T: Task<Controller=C, Item=(usize, I)>>(task: T) -> Self
+impl GeneralJob {
+  pub fn from<C: Control, I, T: Job<Controller=C, Item=(usize, I)>>(job: T) -> Self
     where C: 'static, I: 'static, T: 'static {
-    Self(TaskBox(Box::pin(TaskBox::<C, I>(Box::pin(task)))))
+    Self(JobBox(Box::pin(JobBox::<C, I>(Box::pin(job)))))
   }
 }

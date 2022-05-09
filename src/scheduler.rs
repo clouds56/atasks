@@ -60,7 +60,7 @@ impl<E, P, T> Worker<E, P, T> {
   }
 }
 
-impl<E: Copy + Debug, I, P, T: Task<Item=(usize, I)> + Unpin> Worker<E, P, T>
+impl<E: Copy + Debug, I, P, T: Job<Item=(usize, I)> + Unpin> Worker<E, P, T>
   where P: From<Progress> {
   pub fn event_loop(idx: usize, rx: Receiver<Option<(E, T)>>, tx: Sender<Message<E, P, T>>) -> Receiver<Option<(E, T)>> {
     use futures::StreamExt;
@@ -79,7 +79,7 @@ impl<E: Copy + Debug, I, P, T: Task<Item=(usize, I)> + Unpin> Worker<E, P, T>
   }
 }
 
-impl<E: Copy + Debug, I, P, T: Task<Item=(usize, I)> + Unpin> Worker<E, P, T>
+impl<E: Copy + Debug, I, P, T: Job<Item=(usize, I)> + Unpin> Worker<E, P, T>
   where E: Send + 'static, T: Send + 'static, P: From<Progress> + Send + 'static {
   fn spawn(&mut self) {
     let tx = self.tx.clone();
@@ -120,7 +120,7 @@ impl<E, T, S: Schedulable<E, T>> Scheduler<E, T, S> {
   }
 }
 
-impl<E: Copy + Debug + Send + 'static, I, T: Task<Item=(usize, I)> + Unpin + Send + 'static, S: Schedulable<E, T>> Scheduler<E, T, S>
+impl<E: Copy + Debug + Send + 'static, I, T: Job<Item=(usize, I)> + Unpin + Send + 'static, S: Schedulable<E, T>> Scheduler<E, T, S>
   where S::Message: From<Progress> + Send + 'static {
   pub fn new_worker(&mut self) {
     if self.workers.len() >= self.capacity { return }
@@ -141,7 +141,7 @@ impl<E: Copy + Debug + Send + 'static, I, T: Task<Item=(usize, I)> + Unpin + Sen
   }
 }
 
-impl<E: Copy, I, T: Task<Item=(usize, I)> + Unpin, S: Schedulable<E, T>> Scheduler<E, T, S> {
+impl<E: Copy, I, T: Job<Item=(usize, I)> + Unpin, S: Schedulable<E, T>> Scheduler<E, T, S> {
   fn event_loop(rx: Receiver<Message<E, S::Message, T>>, dispatcher: Arc<Mutex<Dispatcher<E, T>>>, state: Arc<Mutex<S>>) -> Receiver<Message<E, S::Message, T>> {
     let mut retry = None;
     let mut wait = false;
@@ -207,7 +207,7 @@ impl<E: Copy, I, T: Task<Item=(usize, I)> + Unpin, S: Schedulable<E, T>> Schedul
   }
 }
 
-impl<E: Copy, I, T: Task<Item=(usize, I)> + Unpin, S: Schedulable<E, T>> Scheduler<E, T, S>
+impl<E: Copy, I, T: Job<Item=(usize, I)> + Unpin, S: Schedulable<E, T>> Scheduler<E, T, S>
   where E: Send + 'static, T: Send + 'static, S: Send + 'static, S::Message: Send + 'static {
   pub fn spawn(&mut self) {
     if !self.handler.is_some() { return }

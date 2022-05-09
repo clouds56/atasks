@@ -86,7 +86,7 @@ impl Control for State {
   }
 }
 
-pub trait Task: Stream {
+pub trait Job: Stream {
   type Controller: Control;
   fn controller(&self) -> Self::Controller;
 }

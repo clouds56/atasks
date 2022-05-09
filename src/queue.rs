@@ -151,7 +151,7 @@ impl<T: TaskQueueData> TaskQueue<T> {
   }
 }
 
-impl<T: TaskQueueData + Unpin> Task for TaskQueue<T> {
+impl<T: TaskQueueData + Unpin> Job for TaskQueue<T> {
   type Controller = Controller;
   fn controller(&self) -> Self::Controller {
     Controller(self.state.clone())

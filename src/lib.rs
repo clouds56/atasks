@@ -4,7 +4,7 @@
 #[macro_use] pub mod core;
 pub mod common;
 pub mod queue;
-pub mod tasks;
+pub mod jobs;
 pub mod scheduler;
 #[cfg(test)]
 pub(crate) mod test;

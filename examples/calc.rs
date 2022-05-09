@@ -1,7 +1,7 @@
 extern crate atasks;
 
 use atasks::queue::{TaskQueue, TaskQueueData, TaskResult};
-use atasks::tasks::PriorityTasks;
+use atasks::jobs::PriorityJobs;
 use atasks::core::*;
 
 use std::collections::HashSet;
@@ -114,13 +114,13 @@ impl CalcQueueData {
 fn main() {
   dotenv::dotenv().ok();
   env_logger::init();
-  let mut tasks = PriorityTasks::<i32, TaskQueue<CalcQueueData>>::new(3, None);
-  tasks.schedule();
-  tasks.update(|t| {
-    (0..30).map(|_| t.add_task_resume(0, CalcQueueData::gen_queue(100, 5))).collect::<Vec<_>>()
+  let mut jobs = PriorityJobs::<i32, TaskQueue<CalcQueueData>>::new(3, None);
+  jobs.schedule();
+  jobs.update(|t| {
+    (0..30).map(|_| t.add_job_resume(0, CalcQueueData::gen_queue(100, 5))).collect::<Vec<_>>()
   });
-  tasks.wait();
-  let finished = tasks.finished();
+  jobs.wait();
+  let finished = jobs.finished();
   assert_eq!(finished.len(), 30);
   finished.iter().for_each(|(_, s)| s.data().check_result(s.controller().progress()));
 }

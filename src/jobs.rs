@@ -5,22 +5,22 @@ use std::sync::{Arc, Mutex};
 use std::collections::{VecDeque, HashMap, BTreeSet, BTreeMap};
 use slab::Slab;
 
-enum TaskToRun<Task> {
+enum JobToRun<Job> {
   Running,
-  Todo(Task),
+  Todo(Job),
 }
-impl<Task> TaskToRun<Task> {
-  fn take(&mut self) -> Option<Task> {
-    match std::mem::replace(self, TaskToRun::Running) {
-      TaskToRun::Running => None,
-      TaskToRun::Todo(t) => Some(t),
+impl<Job> JobToRun<Job> {
+  fn take(&mut self) -> Option<Job> {
+    match std::mem::replace(self, JobToRun::Running) {
+      JobToRun::Running => None,
+      JobToRun::Todo(t) => Some(t),
     }
   }
-  fn restore(&mut self, t: Task) {
-    if let TaskToRun::Todo(_) = self {
-      panic!("restore to task that occupies");
+  fn restore(&mut self, t: Job) {
+    if let JobToRun::Todo(_) = self {
+      panic!("restore to job that occupies");
     }
-    *self = TaskToRun::Todo(t)
+    *self = JobToRun::Todo(t)
   }
 }
 
@@ -32,7 +32,7 @@ pub enum Status {
 }
 type Key = usize;
 
-struct TaskInfo<O, Controller> {
+struct JobInfo<O, Controller> {
   pub priority: (O, Entry),
   pub controller: Controller,
 }
@@ -75,14 +75,14 @@ impl<K: Ord + Copy + std::fmt::Debug> Current<K> {
 
 pub struct State;
 
-pub trait Callback<T: Task>: FnMut(Progress) {}
-impl<T: Task, F: FnMut(Progress)> Callback<T> for F { }
+pub trait Callback<T: Job>: FnMut(Progress) {}
+impl<T: Job, F: FnMut(Progress)> Callback<T> for F { }
 
-pub struct PriorityTasksState<O, T: Task> {
+pub struct PriorityJobsState<O, T: Job> {
   idx: Entry,
   key_map: HashMap<Entry, Key>,
-  tasks: Slab<TaskToRun<T>>,
-  info: HashMap<Key, TaskInfo<O, T::Controller>>,
+  jobs: Slab<JobToRun<T>>,
+  info: HashMap<Key, JobInfo<O, T::Controller>>,
   queue: BTreeSet<(O, Entry)>,
   status: BTreeMap<(O, Entry), Status>,
   current: Current<Entry>,
@@ -92,12 +92,12 @@ pub struct PriorityTasksState<O, T: Task> {
   callback: Option<Box<dyn FnMut(Progress) + Send>>,
 }
 
-impl<O: Ord + Copy, T: Task> PriorityTasksState<O, T> {
+impl<O: Ord + Copy, T: Job> PriorityJobsState<O, T> {
   fn new(capacity: usize, finished_capacity: Option<usize>) -> Self {
     Self {
       idx: Default::default(),
       key_map: Default::default(),
-      tasks: Slab::new(),
+      jobs: Slab::new(),
       info: HashMap::new(),
       queue: BTreeSet::new(),
       status: BTreeMap::new(),
@@ -115,38 +115,38 @@ impl<O: Ord + Copy, T: Task> PriorityTasksState<O, T> {
     }
   }
 
-  pub fn add_task_resume(&mut self, priority: O, task: T) -> Entry {
-    let entry = self.add_task(priority, task);
+  pub fn add_job_resume(&mut self, priority: O, job: T) -> Entry {
+    let entry = self.add_job(priority, job);
     self.status.insert((priority, entry), Status::Waiting);
-    self.resume_task(entry);
+    self.resume_job(entry);
     entry
   }
-  pub fn add_task(&mut self, priority: O, task: T) -> Entry {
-    let controller = task.controller();
-    let key = self.tasks.insert(TaskToRun::Todo(task));
+  pub fn add_job(&mut self, priority: O, job: T) -> Entry {
+    let controller = job.controller();
+    let key = self.jobs.insert(JobToRun::Todo(job));
     let entry = Entry(self.idx.0); self.idx.0 += 1;
     let priority = (priority, entry);
-    self.info.insert(key, TaskInfo { priority, controller });
+    self.info.insert(key, JobInfo { priority, controller });
     self.status.insert(priority, Status::NotStarted);
     self.key_map.insert(entry, key);
     entry
   }
-  pub fn remove_task(&mut self, entry: Entry) -> Option<Status> {
+  pub fn remove_job(&mut self, entry: Entry) -> Option<Status> {
     let key = self.key_map.remove(&entry)?;
     let mut info = self.info.remove(&key).expect("info");
     let status = self.status.remove(&info.priority).expect("status");
     if !info.controller.is_finished() { info.controller.shutdown(); }
     self.queue.remove(&info.priority);
-    self.tasks.remove(key);
+    self.jobs.remove(key);
     Some(status)
   }
-  pub fn resume_task(&mut self, entry: Entry) -> Option<()> {
+  pub fn resume_job(&mut self, entry: Entry) -> Option<()> {
     let key = self.key_map.get(&entry)?;
     let info = self.info.get_mut(key).expect("info");
     self.queue.insert(info.priority);
     Some(())
   }
-  pub fn pause_task(&mut self, entry: Entry) -> Option<()> {
+  pub fn pause_job(&mut self, entry: Entry) -> Option<()> {
     let key = self.key_map.get(&entry)?;
     let info = self.info.get_mut(key).expect("info");
     self.queue.remove(&info.priority);
@@ -174,7 +174,7 @@ impl<O: Ord + Copy, T: Task> PriorityTasksState<O, T> {
   }
 }
 
-impl<O: Ord + Copy, T: Task> Schedulable<Entry, T> for PriorityTasksState<O, T> {
+impl<O: Ord + Copy, T: Job> Schedulable<Entry, T> for PriorityJobsState<O, T> {
   type Message = Progress;
   fn flush(&mut self) {
     while self.finished_capacity.map(|cap| self.finished.len() > cap) == Some(true) {
@@ -191,15 +191,15 @@ impl<O: Ord + Copy, T: Task> Schedulable<Entry, T> for PriorityTasksState<O, T> 
     }
   }
 
-  fn restore(&mut self, entry: Entry, task: T) {
+  fn restore(&mut self, entry: Entry, job: T) {
     let key = self.key_map[&entry];
     let info = self.info.get(&key).expect("info");
     info!("restore: {:?} {}", entry, info.controller.is_finished());
     if !info.controller.is_finished() {
-      self.tasks.get_mut(key).expect("tasks").restore(task);
+      self.jobs.get_mut(key).expect("jobs").restore(job);
     } else {
-      self.remove_task(entry);
-      self.finished.push_back((entry, task));
+      self.remove_job(entry);
+      self.finished.push_back((entry, job));
     }
     // TODO check complete here?
   }
@@ -207,7 +207,7 @@ impl<O: Ord + Copy, T: Task> Schedulable<Entry, T> for PriorityTasksState<O, T> 
   fn fetch(&mut self) -> Option<(Entry, T)> {
     while let Some(entry) = self.current.pop_todo() {
       if let Some(&key) = self.key_map.get(&entry) {
-        if let Some(t) = self.tasks.get_mut(key).expect("tasks").take() {
+        if let Some(t) = self.jobs.get_mut(key).expect("jobs").take() {
           info!("fetch {:?}", entry);
           self.current.push_current(entry);
           return Some((entry, t))
@@ -224,27 +224,27 @@ impl<O: Ord + Copy, T: Task> Schedulable<Entry, T> for PriorityTasksState<O, T> 
   }
 }
 
-pub struct PriorityTasks<Priority: Ord + Copy, Task: crate::core::Task> {
-  state: Arc<Mutex<PriorityTasksState<Priority, Task>>>,
-  scheduler: Scheduler<Entry, Task, PriorityTasksState<Priority, Task>>,
+pub struct PriorityJobs<Priority: Ord + Copy, Job: crate::core::Job> {
+  state: Arc<Mutex<PriorityJobsState<Priority, Job>>>,
+  scheduler: Scheduler<Entry, Job, PriorityJobsState<Priority, Job>>,
 }
-impl<O: Ord + Copy, T: Task> PriorityTasks<O, T> {
+impl<O: Ord + Copy, T: Job> PriorityJobs<O, T> {
   pub fn new(capacity: usize, finished_capacity: Option<usize>) -> Self {
-    let state = Arc::new(Mutex::new(PriorityTasksState::new(capacity, finished_capacity)));
+    let state = Arc::new(Mutex::new(PriorityJobsState::new(capacity, finished_capacity)));
     Self {
       state: state.clone(),
       scheduler: Scheduler::new(capacity, state),
     }
   }
   pub fn new_with_callback(capacity: usize, finished_capacity: Option<usize>, callback: impl Callback<T> + Send + 'static) -> Self {
-    let state = Arc::new(Mutex::new(PriorityTasksState::new_with_callback(capacity, finished_capacity, callback)));
+    let state = Arc::new(Mutex::new(PriorityJobsState::new_with_callback(capacity, finished_capacity, callback)));
     Self {
       state: state.clone(),
       scheduler: Scheduler::new(capacity, state),
     }
   }
 
-  pub fn update<R, F: FnOnce(&mut PriorityTasksState<O, T>) -> R>(&self, f: F) -> R {
+  pub fn update<R, F: FnOnce(&mut PriorityJobsState<O, T>) -> R>(&self, f: F) -> R {
     let r = f(&mut self.state.lock().unwrap());
     self.scheduler.flush();
     r
@@ -255,8 +255,8 @@ impl<O: Ord + Copy, T: Task> PriorityTasks<O, T> {
   }
 }
 
-impl<O: Ord + Copy, I, T: Task<Item=(usize, I)> + Unpin + Send + 'static> PriorityTasks<O, T>
-  where PriorityTasksState<O, T>: Send + 'static {
+impl<O: Ord + Copy, I, T: Job<Item=(usize, I)> + Unpin + Send + 'static> PriorityJobs<O, T>
+  where PriorityJobsState<O, T>: Send + 'static {
   pub fn schedule(&mut self) {
     self.scheduler.new_workers();
     self.scheduler.spawn();
