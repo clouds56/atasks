@@ -48,6 +48,12 @@ impl AsTaskResult for bool {
   }
 }
 
+pub enum TaskNext<T> {
+  Item(T, usize),
+  Pending,
+  Done,
+}
+
 // it is like Iterator, but not the same
 pub trait TaskQueueData: Sized {
   type Item;
@@ -59,7 +65,7 @@ pub trait TaskQueueData: Sized {
   fn check(&mut self, _idx: usize, _result: &<Self::Task as Task>::Output) -> TaskResult {
     TaskResult::Success
   }
-  fn next(&mut self, idx: usize) -> (usize, Option<Self::Item>);
+  fn next(&mut self, idx: usize) -> TaskNext<Self::Item>;
   fn run(&self, id: &Self::Item) -> Self::Task;
   fn build(self, capacity: usize) -> TaskQueue<Self> {
     TaskQueue::from_queue(self, capacity)
@@ -68,6 +74,7 @@ pub trait TaskQueueData: Sized {
 
 pub struct TaskQueue<T: TaskQueueData> {
   state: Arc<Mutex<State>>,
+  pending: bool,
   current: Vec<(usize, T::Item, FutureOf<T::Task>)>,
   queue: VecDeque<(usize, T::Item)>,
   waker: Cell<Option<Waker>>,
@@ -80,13 +87,22 @@ impl<T: TaskQueueData> TaskQueue<T> {
   fn next_idx(&mut self) -> Option<(usize, T::Item)> {
     let mut state = self.state.lock().unwrap();
     if state.total.is_none() || state.idx < state.total.unwrap() {
-      let (idx, item) = self.data.next(state.idx);
-      if let Some(item) = item {
-        state.items += 1;
-        state.idx = idx + 1;
-        return Some((idx, item))
-      } else {
-        state.total = Some(idx)
+      let current_idx = state.idx;
+      match self.data.next(current_idx) {
+        TaskNext::Item(item, idx) => {
+          state.items += 1;
+          state.idx = idx;
+          state.waiting = false;
+          return Some((current_idx, item))
+        }
+        TaskNext::Pending => {
+          if state.total.is_none() {
+            state.waiting = true;
+          }
+        },
+        TaskNext::Done => {
+          state.waiting = false;
+        },
       }
     }
     self.queue.pop_front()
@@ -100,6 +116,7 @@ impl<T: TaskQueueData> TaskQueue<T> {
       current: vec![],
       queue: VecDeque::new(),
       waker: Cell::new(None),
+      pending: false,
       data,
       capacity,
     }
@@ -183,12 +200,15 @@ impl<T: TaskQueueData + Unpin> Stream for TaskQueue<T> {
     });
     while !self.is_stopped() && self.current.len() < self.capacity {
       if let Some((idx, item)) = self.next_idx() {
-        let fut = self.data.run(&item);
-        self.current_push(idx, item, fut);
+        let task = self.data.run(&item);
+        self.current_push(idx, item, task);
         added = true;
       } else {
         break
       }
+    }
+    if !added {
+      self.pending = true;
     }
     if let Some(e) = item {
       Poll::Ready(Some(e))
@@ -221,6 +241,7 @@ impl Control for Controller {
   fn is_shutdown(&self) -> bool { self.0.lock().unwrap().is_shutdown() }
   fn is_running(&self) -> bool { self.0.lock().unwrap().is_running() }
   fn is_finished(&self) -> bool { self.0.lock().unwrap().is_finished() }
+  fn is_waiting(&self) -> bool { self.0.lock().unwrap().is_waiting() }
 }
 
 #[cfg(test)]

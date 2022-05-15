@@ -1,6 +1,6 @@
 extern crate atasks;
 
-use atasks::queue::{TaskQueue, TaskQueueData, TaskResult};
+use atasks::queue::{TaskQueue, TaskQueueData, TaskResult, TaskNext};
 use atasks::jobs::PriorityJobs;
 use atasks::core::*;
 
@@ -66,11 +66,11 @@ impl TaskQueueData for CalcQueueData {
       }
     }
   }
-  fn next(&mut self, idx: usize) -> (usize, Option<Self::Item>) {
+  fn next(&mut self, idx: usize) -> TaskNext<Self::Item> {
     assert!(self.visit_next.remove(&idx), "revisit {}", idx);
-    if idx >= self.data.len() { return (self.data.len(), None) }
+    if idx >= self.data.len() { return TaskNext::Done }
     let item = self.data[idx];
-    (idx, Some(item))
+    TaskNext::Item(item, idx+1)
   }
   fn run(&self, &item: &f64) -> Self::Task {
     Calc::new(item)

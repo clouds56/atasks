@@ -12,11 +12,12 @@ pub trait Schedulable<E, T> {
   fn flush(&mut self);
   fn restore(&mut self, entry: E, task: T);
   fn fetch(&mut self) -> Option<(E, T)>;
-  fn callback(&mut self, _entry: E, _idx: usize, _p: Self::Message) {}
+  fn callback(&mut self, _entry: E, _idx: usize, _p: Progress) {}
 }
 
-pub enum Message<E, P, T> {
-  Progress(usize, E, usize, P),
+/// 
+pub enum Message<E, T> {
+  Progress(usize, E, usize, Progress),
   Finish(usize, E, T),
   NewWorker(usize),
   Flush,
@@ -48,21 +49,20 @@ impl<T> MaybeJoin<T> {
   fn is_some(&self) -> bool { if let MaybeJoin::Some(_) = self { true } else { false } }
 }
 
-pub struct Worker<E, P, T> {
+pub struct Worker<E, T> {
   idx: usize,
-  tx: Sender<Message<E, P, T>>,
+  tx: Sender<Message<E, T>>,
   handler: MaybeJoin<Receiver<Option<(E, T)>>>,
 }
 
-impl<E, P, T> Worker<E, P, T> {
-  pub fn new(idx: usize, rx: Receiver<Option<(E, T)>>, tx: Sender<Message<E, P, T>>) -> Self {
+impl<E, T> Worker<E, T> {
+  pub fn new(idx: usize, rx: Receiver<Option<(E, T)>>, tx: Sender<Message<E, T>>) -> Self {
     Self { idx, tx, handler: MaybeJoin::Some(rx) }
   }
 }
 
-impl<E: Copy + Debug, I, P, T: Job<Item=(usize, I)> + Unpin> Worker<E, P, T>
-  where P: From<Progress> {
-  pub fn event_loop(idx: usize, rx: Receiver<Option<(E, T)>>, tx: Sender<Message<E, P, T>>) -> Receiver<Option<(E, T)>> {
+impl<E: Copy + Debug, I, T: Job<Item=(usize, I)> + Unpin> Worker<E, T> {
+  pub fn event_loop(idx: usize, rx: Receiver<Option<(E, T)>>, tx: Sender<Message<E, T>>) -> Receiver<Option<(E, T)>> {
     use futures::StreamExt;
     futures::executor::block_on(async {
       while let Ok(Some((entry, mut t))) = rx.recv() {
@@ -79,8 +79,8 @@ impl<E: Copy + Debug, I, P, T: Job<Item=(usize, I)> + Unpin> Worker<E, P, T>
   }
 }
 
-impl<E: Copy + Debug, I, P, T: Job<Item=(usize, I)> + Unpin> Worker<E, P, T>
-  where E: Send + 'static, T: Send + 'static, P: From<Progress> + Send + 'static {
+impl<E: Copy + Debug, I, T: Job<Item=(usize, I)> + Unpin> Worker<E, T>
+  where E: Send + 'static, T: Send + 'static {
   fn spawn(&mut self) {
     let tx = self.tx.clone();
     let idx = self.idx;
@@ -97,12 +97,12 @@ impl<E: Copy + Debug, I, P, T: Job<Item=(usize, I)> + Unpin> Worker<E, P, T>
 type Dispatcher<E, T> = HashMap<usize, (Sender<Option<(E, T)>>, bool)>;
 
 pub struct Scheduler<E, T, S: Schedulable<E, T>> {
-  tx: Sender<Message<E, S::Message, T>>,
+  tx: Sender<Message<E, T>>,
   capacity: usize,
   dispatcher: Arc<Mutex<Dispatcher<E, T>>>,
-  workers: Vec<Worker<E, S::Message, T>>,
+  workers: Vec<Worker<E, T>>,
   state: Arc<Mutex<S>>,
-  handler: MaybeJoin<Receiver<Message<E, S::Message, T>>>,
+  handler: MaybeJoin<Receiver<Message<E, T>>>,
 }
 
 impl<E, T, S: Schedulable<E, T>> Scheduler<E, T, S> {
@@ -142,7 +142,7 @@ impl<E: Copy + Debug + Send + 'static, I, T: Job<Item=(usize, I)> + Unpin + Send
 }
 
 impl<E: Copy, I, T: Job<Item=(usize, I)> + Unpin, S: Schedulable<E, T>> Scheduler<E, T, S> {
-  fn event_loop(rx: Receiver<Message<E, S::Message, T>>, dispatcher: Arc<Mutex<Dispatcher<E, T>>>, state: Arc<Mutex<S>>) -> Receiver<Message<E, S::Message, T>> {
+  fn event_loop(rx: Receiver<Message<E, T>>, dispatcher: Arc<Mutex<Dispatcher<E, T>>>, state: Arc<Mutex<S>>) -> Receiver<Message<E, T>> {
     let mut retry = None;
     let mut wait = false;
     while let Ok(m) = rx.recv() {
